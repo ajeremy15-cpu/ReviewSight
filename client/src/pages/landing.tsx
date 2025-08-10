@@ -11,9 +11,9 @@ export default function Landing() {
       <div className="relative overflow-hidden">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-20 pb-16">
           <div className="text-center">
-            <h1 className="text-5xl md:text-6xl font-bold text-slate-900 mb-6">
+            <h1 className="text-4xl md:text-5xl lg:text-6xl font-bold text-slate-900 mb-6 leading-tight">
               Transform Customer Reviews into{" "}
-              <span className="text-transparent bg-clip-text bg-gradient-to-r from-primary-600 to-purple-600">
+              <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-purple-600">
                 Actionable Insights
               </span>
             </h1>

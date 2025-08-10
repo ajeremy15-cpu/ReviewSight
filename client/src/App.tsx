@@ -4,7 +4,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AuthProvider } from "@/components/auth/auth-context";
-import Navigation from "@/components/navigation";
+import { Header } from "@/components/ui/header";
 import Landing from "@/pages/landing";
 import Auth from "@/pages/auth";
 import Dashboard from "@/pages/dashboard";
@@ -35,7 +35,7 @@ function App() {
       <TooltipProvider>
         <AuthProvider>
           <div className="min-h-screen bg-slate-50">
-            <Navigation />
+            <Header />
             <Router />
           </div>
           <Toaster />
