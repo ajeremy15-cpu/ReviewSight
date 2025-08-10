@@ -1,0 +1,105 @@
+Goal: Build a full‑stack SaaS web application that aggregates public business reviews, analyzes them with AI, provides a searchable reviews page, includes a creator marketplace page (creators connect their socials and share stats), and a training library tab with documents/videos.
+Constraints: Must run on Replit free tier. Keep external services minimal. Use an .env for keys. Provide seed data so everything works without external APIs.
+
+Tech stack (please scaffold and implement):
+
+Next.js + TypeScript (App Router) — one repo, full‑stack
+Prisma + SQLite (file DB for free tier)
+Auth: NextAuth (Credentials provider: email+password), plus a “Demo Login” button (seeded user)
+UI: Tailwind CSS + shadcn/ui components
+Charts: Chart.js or Recharts
+File upload: Next.js API route + CSV parsing (Papaparse)
+AI: OpenAI API (env var OPENAI_API_KEY) for summaries + aspect sentiment; cache results to avoid reanalysis
+Validation: Zod
+PDF export: simple HTML→PDF (e.g., pdf-lib or jspdf) for downloadable reports
+Logging: basic server logs + store AI calls in ai_logs
+High‑level pages & routes (App Router):
+/ Landing Page: product value, CTA to sign up or demo.
+/auth Sign up / Sign in (credentials).
+/dashboard Owner Dashboard (protected):
+Rating over time graph (average star by week/month).
+Latest reviews list (source, rating, snippet, link).
+Key areas for development (top 3–5 aspect themes with scores).
+“Generate Weekly Report” button → produces an AI report and allows Download PDF.
+/reviews Search & Filter Page (protected):
+Filters: date range, star rating, source (Google, Tripadvisor, Yelp, “CSV”), aspect (Cleanliness, Staff, Food/Quality, Value, Location, Speed/Wait), keyword text.
+Results list with pagination; clicking a review opens a side panel with full text + “included in which insights”.
+CSV upload (owner can upload exported reviews) → parse, store, and queue for analysis.
+/creators Creator Marketplace:
+Creator signup (separate role). Creators add name, bio, niche tags, country/city, social links (Facebook/Instagram/TikTok URLs), and enter stats manually for v1: average engagement rate, last 30‑day impressions, followers, post frequency.
+Compute a Brand‑Fit Score for a given business (heuristic): match by niche tags overlap, audience location proximity, min engagement threshold. Store the score per business.
+Business view: searchable/filterable list of creators (by niche, location radius, min engagement), with detail page showing stats, recent content links (just hyperlinks), and a “Shortlist” button.
+/training Training Library:
+Categories (Service, Housekeeping, F&B, Front Desk, Social Media) with static docs/videos (seed with a dozen links and markdown pages).
+“Recommended for You” section that reads recent insights and suggests 3 modules.
+/settings Settings: profile, organization (business) name, invite teammate (email), and a Usage tab (AI calls last 30 days).
+Core data model (Prisma schema):
+User { id, name, email, passwordHash, role: enum(OWNER,CREATOR), createdAt }
+Organization { id, name, slug, createdAt }
+OrganizationMember { id, organizationId, userId, role: enum(OWNER,ADMIN,MEMBER) }
+ReviewSource { id, organizationId, name, url } // e.g., Google, Tripadvisor
+Review { id, organizationId, sourceId, externalId?, author?, rating (int 1–5), text, createdAt, rawJson? }
+AspectScore { id, reviewId, aspect: enum(CLEANLINESS,STAFF,FOOD_QUALITY,VALUE,LOCATION,SPEED), sentiment: enum(NEG,NEUTRAL,POS), score (float -1..1) }
+Insight { id, organizationId, title, summary, aspects: string[], severity: enum(LOW,MEDIUM,HIGH), fromDate, toDate, contributingReviewIds: string (CSV), createdAt }
+AiLog { id, organizationId, route, promptHash, prompt, response, tokensIn, tokensOut, success, createdAt }
+CreatorProfile { id, userId, displayName, bio, city, country, niches: string[], instagramUrl?, facebookUrl?, tiktokUrl?, createdAt }
+CreatorStats { id, creatorId, followers, engagementRate, impressions30d, postFrequencyPerWeek, lastUpdated }
+Shortlist { id, organizationId, creatorId, createdAt }
+TrainingResource { id, category, title, format: enum(DOC,VIDEO), url, markdown?, createdAt }
+UsageEvent { id, organizationId, type: enum(AI_CALL,UPLOAD), tokens?, metaJson?, createdAt }
+Seed data:
+Create a demo Organization “Blue Lagoon Hotel”.
+Seed ~50 mixed reviews across two sources (“Google” and “Tripadvisor”) with dates, ratings, and varied text that mentions aspects (cleanliness, friendly staff, slow service, great location, etc.).
+Seed 8–10 Creators across Jamaica/Caribbean niches with plausible stats.
+Seed 10–12 TrainingResources (mix of markdown docs and YouTube/Vimeo links).
+Create demo owner user (owner@example.com / password demo1234) and demo creator (creator@example.com / demo1234).
+AI analysis requirements:
+Provide a reusable analyzeReviews(reviews[]) server util that:
+Deduplicates and chunks long text,
+Extracts aspect‑based sentiments (for the 6 aspects),
+Generates top 5 actionable insights with severity,
+Returns Key Areas of Development (3–5 bullets) and Quick Wins (3 bullets),
+Produces a short Weekly Report narrative with headings (Overview, What Improved, What Slipped, Top Actions, Notable Reviews).
+Caching: For each Review, compute a content hash; store aspect results so the same review isn’t re‑sent to the model.
+Transparency: Each Insight must store the contributing review IDs, and the UI should link to them.
+Expose a server route /api/insights/recompute (POST, protected) to re‑run analysis for the current organization.
+Dashboard UI details:
+Rating graph (line or bar) by week/month.
+Latest reviews list (10 most recent).
+Key areas of development: cards with aspect name, trend arrow, and short explanation.
+Button: “Generate Weekly PDF” → build a PDF from the current insights + charts and download.
+Reviews Search page:
+Left filter panel (date range, rating multi‑select, source multi‑select, aspect pills, keyword).
+Main list with rating stars, snippet, aspect chips; click → slide‑over with full text + links to insights.
+CSV Upload button → parse CSV (headers: date, rating, text, author, source) → insert to DB → queue analysis (call the analyze util).
+Creator Marketplace details:
+Creator view: profile editor to add socials & stats.
+Business view: table/grid of creators with columns: name, niches, city/country, followers, engagement rate, brand‑fit score.
+Brand‑fit heuristic: niche overlap (0–60 pts) + location proximity (0–30 pts; Jamaica/Caribbean > closer score) + engagement threshold (bonus up to 10 pts). Display the score (0–100).
+Ability to Shortlist creators; show a “Shortlisted” section on the org dashboard (simple table).
+Training Library details:
+Category tabs.
+Each item: title, type badge (DOC/VIDEO), quick description; click → view markdown or open external video link.
+“Recommended” area that reads the last 14 days of Insights and picks 3 relevant modules (based on keyword/aspect match).
+Auth & RBAC:
+NextAuth Credentials provider. Store hashed password (bcrypt).
+Roles: OWNER sees all owner UI; CREATOR sees only creator profile + public marketplace page (no owner dashboards).
+Simple withAuth server helper to protect API routes & pages.
+Usage & cost guardrails:
+Every AI call writes a UsageEvent with tokens in/out.
+Add a per‑org daily soft cap constant (e.g., 100k tokens); show a banner if exceeded.
+Developer experience:
+Provide README.md with setup steps, env variables sample .env.example (OPENAI_API_KEY, NEXTAUTH_SECRET).
+Include npm run dev script and Prisma commands (prisma migrate, prisma db seed).
+Add lightweight unit tests for the aspect extractor (mock LLM).
+Deliverables checklist:
+Working Next.js app with the pages above.
+Prisma schema and migrations; seed script populates demo data.
+Functional CSV import & analysis pipeline.
+Dashboard charts, Latest Reviews, Key Areas of Development.
+Reviews page with filters & detail slide‑over.
+Creator signup/profile + marketplace list + shortlist flow with brand‑fit score.
+Training library with categories + recommended modules.
+Generate Weekly PDF download.
+README with instructions.
+If something is ambiguous, make pragmatic choices that keep v1 fast and shippable.
