@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import CreatorCard from "@/components/creators/creator-card";
 
 type PlatformStats = {
@@ -52,11 +52,14 @@ function normalizeCreator(raw: RawCreator) {
 }
 
 export default function Creators() {
+  // diagnostics + data
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState<number | null>(null);
-  const [text, setText] = useState<string>("");
   const [json, setJson] = useState<any>(null);
+  const [text, setText] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
+
+  // shortlist (client-only for now)
   const [shortlisted, setShortlisted] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
@@ -65,21 +68,23 @@ export default function Creators() {
         setLoading(true);
         setError(null);
         setStatus(null);
+        setJson(null);
         setText("");
 
+        // Force no-cache to avoid 304-without-body edge cases
         const res = await fetch("/api/creators", {
           credentials: "include",
           headers: { Accept: "application/json" },
+          cache: "no-store",
         });
+
         setStatus(res.status);
 
         const ct = res.headers.get("content-type") || "";
         if (ct.includes("application/json")) {
-          const j = await res.json();
-          setJson(j);
+          setJson(await res.json());
         } else {
-          const t = await res.text();
-          setText(t);
+          setText(await res.text());
         }
       } catch (e: any) {
         setError(e?.message || String(e));
@@ -99,31 +104,25 @@ export default function Creators() {
 
   const normalized = creators.map(normalizeCreator);
 
-  // --- DIAGNOSTIC HUD (visible only if something’s off) ---
+  // Show a small diagnostics panel until we see valid data
   const showDiag = loading || error || status !== 200 || !normalized.length;
 
   return (
     <div className="p-6">
       {showDiag && (
         <div className="mb-4 rounded-xl border p-4 text-sm">
-          <div className="font-semibold mb-2">Creators Diagnostics</div>
+          <div className="font-semibold mb-1">Creators Diagnostics</div>
           <div>Loading: {String(loading)}</div>
           <div>Status: {status ?? "n/a"}</div>
           {error && <div className="text-red-600">Error: {error}</div>}
-          {!!text && (
-            <div className="mt-2">
-              <div className="font-medium">Text response:</div>
-              <pre className="overflow-auto whitespace-pre-wrap">{text}</pre>
-            </div>
-          )}
           {json && (
             <div className="mt-2">
-              <div className="font-medium">JSON keys:</div>
-              <pre className="overflow-auto whitespace-pre-wrap">
-                {JSON.stringify(Object.keys(json), null, 2)}
-              </pre>
-              <div className="mt-2">Creators length (parsed): {normalized.length}</div>
+              <div>JSON keys: {JSON.stringify(Object.keys(json))}</div>
+              <div>Parsed creators length: {normalized.length}</div>
             </div>
+          )}
+          {!!text && (
+            <pre className="mt-2 whitespace-pre-wrap overflow-auto">{text}</pre>
           )}
         </div>
       )}
