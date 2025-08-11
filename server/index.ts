@@ -1,23 +1,31 @@
 import express, { type Request, Response, NextFunction } from "express";
 import session from "express-session";
+import memorystore from "memorystore";
+
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
 
 const app = express();
+// Behind Render/Vercel proxies
+app.set('trust proxy', 1);
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
 // Session configuration
+
+const MemoryStore = memorystore(session);
 app.use(session({
-  secret: process.env.SESSION_SECRET || 'your-secret-key-here',
+  secret: process.env.SESSION_SECRET || 'change-me-please',
   resave: false,
   saveUninitialized: false,
+  store: new MemoryStore({ checkPeriod: 1000 * 60 * 60 * 24 }),
   cookie: {
-    secure: process.env.NODE_ENV === 'production',
-    maxAge: 24 * 60 * 60 * 1000 // 24 hours
+    secure: true,          // HTTPS only on Render
+    httpOnly: true,
+    sameSite: 'lax',       // if you host frontend on a different origin, change to 'none'
+    maxAge: 1000 * 60 * 60 * 24 * 7
   }
 }));
-
 // Extend Express Request interface
 declare module 'express-session' {
   interface SessionData {
