@@ -45,15 +45,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const checkAuth = async () => {
     try {
-      const response = await fetch("/api/auth/me", {
-        credentials: "include",
-      });
-      
-      if (response.ok) {
-        const data = await response.json();
-        setUser(data.user);
-        setOrganizations(data.organizations || []);
-      }
+      const data = await apiRequest("GET", "/api/auth/me");
+      setUser(data.user);
+      setOrganizations(data.organizations || []);
     } catch (error) {
       console.error("Auth check failed:", error);
     } finally {
@@ -62,45 +56,45 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const login = async (email: string, password: string) => {
-  setLoading(true);
-  try {
-    await apiRequest("POST", "/api/auth/login", { email, password });
-    await checkAuth(); // ensure header & tabs hydrate from session
-  } finally {
-    setLoading(false);
-  }
-};
+    setLoading(true);
+    try {
+      await apiRequest("POST", "/api/auth/login", { email, password });
+      await checkAuth();
+    } finally {
+      setLoading(false);
+    }
+  };
 
-const signup = async (data: SignupData) => {
-  setLoading(true);
-  try {
-    await apiRequest("POST", "/api/auth/signup", data);
-    await checkAuth();
-  } finally {
-    setLoading(false);
-  }
-};
+  const signup = async (data: SignupData) => {
+    setLoading(true);
+    try {
+      await apiRequest("POST", "/api/auth/signup", data);
+      await checkAuth();
+    } finally {
+      setLoading(false);
+    }
+  };
 
-const demoLogin = async () => {
-  setLoading(true);
-  try {
-    await apiRequest("POST", "/api/auth/demo");
-    await checkAuth();
-  } finally {
-    setLoading(false);
-  }
-};
+  const demoLogin = async () => {
+    setLoading(true);
+    try {
+      await apiRequest("POST", "/api/auth/demo");
+      await checkAuth();
+    } finally {
+      setLoading(false);
+    }
+  };
 
-const logout = async () => {
-  setLoading(true);
-  try {
-    await apiRequest("POST", "/api/auth/logout");
-    setUser(null);
-    setOrganizations([]);
-  } finally {
-    setLoading(false);
-  }
-};
+  const logout = async () => {
+    setLoading(true);
+    try {
+      await apiRequest("POST", "/api/auth/logout");
+      setUser(null);
+      setOrganizations([]);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <AuthContext.Provider
