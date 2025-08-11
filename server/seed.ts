@@ -11,212 +11,173 @@ import {
 } from "@shared/schema";
 import bcrypt from "bcrypt";
 
+async function ensureUser(email: string, data: Omit<typeof users.$inferInsert, "email">) {
+  const existing = await db.query.users.findFirst({
+    where: (u, { eq }) => eq(u.email, email),
+  });
+  if (existing) return existing;
+  const [row] = await db.insert(users).values({ email, ...data }).returning();
+  return row;
+}
+
+async function ensureOrganization(slug: string, name: string) {
+  const existing = await db.query.organizations.findFirst({
+    where: (o, { eq }) => eq(o.slug, slug),
+  });
+  if (existing) return existing;
+  const [row] = await db.insert(organizations).values({ slug, name }).returning();
+  return row;
+}
+
+async function ensureOrgMember(organizationId: string, userId: string, role: "OWNER" | "CREATOR") {
+  const existing = await db.query.organizationMembers.findFirst({
+    where: (m, { and, eq }) => and(eq(m.organizationId, organizationId), eq(m.userId, userId)),
+  });
+  if (existing) return existing;
+  const [row] = await db.insert(organizationMembers).values({ organizationId, userId, role }).returning();
+  return row;
+}
+
+async function ensureReviewSource(organizationId: string, name: string, url: string) {
+  const existing = await db.query.reviewSources.findFirst({
+    where: (s, { and, eq }) => and(eq(s.organizationId, organizationId), eq(s.name, name)),
+  });
+  if (existing) return existing;
+  const [row] = await db.insert(reviewSources).values({ organizationId, name, url }).returning();
+  return row;
+}
+
+async function ensureReview(r: typeof reviews.$inferInsert) {
+  // crude idempotency: author + createdAt + source + org
+  const existing = await db.query.reviews.findFirst({
+    where: (rv, { and, eq }) =>
+      and(
+        eq(rv.organizationId, r.organizationId),
+        eq(rv.sourceId, r.sourceId),
+        eq(rv.author, r.author),
+        eq(rv.createdAt, r.createdAt as Date)
+      ),
+  });
+  if (existing) return existing;
+  const [row] = await db.insert(reviews).values(r).returning();
+  return row;
+}
+
+async function ensureCreatorProfile(match: { displayName: string; country: string }, data: Omit<typeof creatorProfiles.$inferInsert, "id">) {
+  const existing = await db.query.creatorProfiles.findFirst({
+    where: (p, { and, eq }) => and(eq(p.displayName, match.displayName), eq(p.country, match.country)),
+  });
+  if (existing) return existing;
+  const [row] = await db.insert(creatorProfiles).values(data).returning();
+  return row;
+}
+
+async function ensureCreatorStats(creatorId: string, data: Omit<typeof creatorStats.$inferInsert, "id" | "creatorId">) {
+  const existing = await db.query.creatorStats.findFirst({
+    where: (s, { eq }) => eq(s.creatorId, creatorId),
+  });
+  if (existing) return existing;
+  const [row] = await db.insert(creatorStats).values({ creatorId, ...data }).returning();
+  return row;
+}
+
+async function ensureTraining(title: string, data: Omit<typeof trainingResources.$inferInsert, "id" | "title">) {
+  const existing = await db.query.trainingResources.findFirst({
+    where: (t, { eq }) => eq(t.title, title),
+  });
+  if (existing) return existing;
+  const [row] = await db.insert(trainingResources).values({ title, ...data }).returning();
+  return row;
+}
+
 /**
- * This seed is ADDITIVE:
- * - No deletes
- * - Uses onConflictDoNothing to avoid duplicates when re-running
- * - Adds a small amount of extra data
+ * ADDITIVE seed: does not delete anything and does not rely on ON CONFLICT targets.
+ * Safe to re-run; it checks for existence before inserting.
  */
 async function seed() {
-  console.log("Starting ADDITIVE seed...");
+  console.log("Starting ADDITIVE seed (no ON CONFLICT targets)...");
 
-  // 1) Ensure demo users exist
-  const ownerEmail = "owner@example.com";
-  const creatorEmail = "creator@example.com";
+  // Users
   const passwordHash = await bcrypt.hash("demo1234", 10);
-
-  const [owner] = await db
-    .insert(users)
-    .values({
-      name: "Demo Owner",
-      email: ownerEmail,
-      passwordHash,
-      role: "OWNER",
-    })
-    // UNIQUE(users.email) assumed
-    .onConflictDoNothing({ target: users.email })
-    .returning();
-
-  const [creatorUser] = await db
-    .insert(users)
-    .values({
-      name: "Demo Creator",
-      email: creatorEmail,
-      passwordHash,
-      role: "CREATOR",
-    })
-    .onConflictDoNothing({ target: users.email })
-    .returning();
-
-  // If they already existed, fetch them (so we have their IDs)
-  const [ownerRow] =
-    owner ??
-    (await db.query.users.findMany({
-      where: (u, { eq }) => eq(u.email, ownerEmail),
-      limit: 1,
-    }));
-  const [creatorUserRow] =
-    creatorUser ??
-    (await db.query.users.findMany({
-      where: (u, { eq }) => eq(u.email, creatorEmail),
-      limit: 1,
-    }));
-
+  const owner = await ensureUser("owner@example.com", {
+    name: "Demo Owner",
+    passwordHash,
+    role: "OWNER",
+  });
+  const creatorUser = await ensureUser("creator@example.com", {
+    name: "Demo Creator",
+    passwordHash,
+    role: "CREATOR",
+  });
   console.log("Ensured demo users exist");
 
-  // 2) Ensure organization exists
-  const orgSlug = "blue-lagoon-hotel";
-  const [org] = await db
-    .insert(organizations)
-    .values({
-      name: "Blue Lagoon Hotel",
-      slug: orgSlug,
-    })
-    // UNIQUE(organizations.slug) assumed
-    .onConflictDoNothing({ target: organizations.slug })
-    .returning();
-
-  const [orgRow] =
-    org ??
-    (await db.query.organizations.findMany({
-      where: (o, { eq }) => eq(o.slug, orgSlug),
-      limit: 1,
-    }));
-
-  // 3) Ensure owner is a member
-  await db
-    .insert(organizationMembers)
-    .values({
-      organizationId: orgRow.id,
-      userId: ownerRow.id,
-      role: "OWNER",
-    })
-    // If you have a unique composite on (organizationId, userId), use it here:
-    // .onConflictDoNothing({ target: [organizationMembers.organizationId, organizationMembers.userId] })
-    .onConflictDoNothing();
-
+  // Organization + membership
+  const org = await ensureOrganization("blue-lagoon-hotel", "Blue Lagoon Hotel");
+  await ensureOrgMember(org.id, owner.id, "OWNER");
   console.log("Ensured organization & membership exist");
 
-  // 4) Review sources (Google + TripAdvisor)
-  const [googleSrc] = await db
-    .insert(reviewSources)
-    .values({
-      organizationId: orgRow.id,
-      name: "Google Reviews",
-      url: "https://business.google.com",
-    })
-    // If you have a unique composite like (organizationId, name), use it:
-    .onConflictDoNothing()
-    .returning();
-
-  const [tripSrc] = await db
-    .insert(reviewSources)
-    .values({
-      organizationId: orgRow.id,
-      name: "TripAdvisor",
-      url: "https://tripadvisor.com",
-    })
-    .onConflictDoNothing()
-    .returning();
-
-  // Fetch if already existed
-  const googleSource =
-    googleSrc ??
-    (await db.query.reviewSources.findFirst({
-      where: (s, { and, eq }) =>
-        and(eq(s.organizationId, orgRow.id), eq(s.name, "Google Reviews")),
-    }))!;
-  const tripAdvisorSource =
-    tripSrc ??
-    (await db.query.reviewSources.findFirst({
-      where: (s, { and, eq }) =>
-        and(eq(s.organizationId, orgRow.id), eq(s.name, "TripAdvisor")),
-    }))!;
-
+  // Review sources
+  const googleSource = await ensureReviewSource(org.id, "Google Reviews", "https://business.google.com");
+  const tripSource = await ensureReviewSource(org.id, "TripAdvisor", "https://tripadvisor.com");
   console.log("Ensured review sources exist");
 
-  // 5) Add a SMALL batch of reviews (skips duplicates by (orgId, sourceId, author, createdAt))
+  // Small batch of reviews
   const extraReviews = [
     {
-      organizationId: orgRow.id,
+      organizationId: org.id,
       sourceId: googleSource.id,
       author: "Test Guest A",
       rating: 4,
-      text:
-        "Lovely beach and friendly staff. Room was comfy, breakfast could improve.",
+      text: "Lovely beach and friendly staff. Room was comfy, breakfast could improve.",
       createdAt: new Date("2024-04-01"),
     },
     {
-      organizationId: orgRow.id,
-      sourceId: tripAdvisorSource.id,
+      organizationId: org.id,
+      sourceId: tripSource.id,
       author: "Test Guest B",
       rating: 5,
-      text:
-        "Excellent stay! Fast check-in and beautiful ocean views. Will return.",
+      text: "Excellent stay! Fast check-in and beautiful ocean views. Will return.",
       createdAt: new Date("2024-04-03"),
     },
     {
-      organizationId: orgRow.id,
+      organizationId: org.id,
       sourceId: googleSource.id,
       author: "Test Guest C",
       rating: 3,
-      text:
-        "Great location, but our AC was noisy. Staff handled it the next day.",
+      text: "Great location, but our AC was noisy. Staff handled it the next day.",
       createdAt: new Date("2024-04-05"),
     },
-  ];
+  ] satisfies Array<typeof reviews.$inferInsert>;
 
-  // If you have a unique index on (organizationId, sourceId, author, createdAt), target it.
-  for (const r of extraReviews) {
-    await db.insert(reviews).values(r).onConflictDoNothing();
-  }
-
+  for (const r of extraReviews) await ensureReview(r);
   console.log("Added a small set of extra reviews (additive)");
 
-  // 6) Creators — ensure one main creator profile, then add 2 tiny extras
-  // Main creator (idempotent by userId)
-  const [mayaProfile] = await db
-    .insert(creatorProfiles)
-    .values({
-      userId: creatorUserRow.id,
+  // Creators
+  const maya = await ensureCreatorProfile(
+    { displayName: "Maya Thompson", country: "Jamaica" },
+    {
+      userId: creatorUser.id,
       displayName: "Maya Thompson",
-      bio:
-        "Caribbean lifestyle & travel content creator; luxury resorts & local experiences.",
+      bio: "Caribbean lifestyle & travel content creator; luxury resorts & local experiences.",
       city: "Kingston",
       country: "Jamaica",
       niches: ["travel", "luxury", "lifestyle"],
       instagramUrl: "https://instagram.com/maya_caribbean",
       facebookUrl: "https://facebook.com/maya.thompson",
       tiktokUrl: "https://tiktok.com/@maya_travel",
-    })
-    // If creatorProfiles.userId is unique, this will upsert safely
-    .onConflictDoNothing({ target: creatorProfiles.userId })
-    .returning();
+    }
+  );
+  await ensureCreatorStats(maya.id, {
+    followers: 127_000,
+    engagementRate: "8.2",
+    impressions30d: 2_400_000,
+    postFrequencyPerWeek: 5,
+  });
 
-  const maya =
-    mayaProfile ??
-    (await db.query.creatorProfiles.findFirst({
-      where: (p, { eq }) => eq(p.userId, creatorUserRow.id),
-    }))!;
-
-  // Stats for Maya (idempotent by creatorId)
-  await db
-    .insert(creatorStats)
-    .values({
-      creatorId: maya.id,
-      followers: 127_000,
-      engagementRate: "8.2",
-      impressions30d: 2_400_000,
-      postFrequencyPerWeek: 5,
-    })
-    .onConflictDoNothing({ target: creatorStats.creatorId });
-
-  // Two additional creators (very small set)
   const tinyCreators = [
     {
       displayName: "Marcus Johnson",
-      bio:
-        "Food & culture across the Caribbean. Hospitality & culinary experiences.",
+      bio: "Food & culture across the Caribbean. Hospitality & culinary experiences.",
       city: "Montego Bay",
       country: "Jamaica",
       niches: ["food", "culture", "tourism"],
@@ -229,8 +190,7 @@ async function seed() {
     },
     {
       displayName: "Sophia Williams",
-      bio:
-        "Luxury travel blogger covering high-end resorts & exclusive beach spots.",
+      bio: "Luxury travel blogger covering high-end resorts & exclusive beach spots.",
       city: "Bridgetown",
       country: "Barbados",
       niches: ["luxury", "travel", "lifestyle"],
@@ -244,11 +204,10 @@ async function seed() {
   ];
 
   for (const c of tinyCreators) {
-    // Upsert a creator profile by (displayName, country) as a simple uniqueness heuristic
-    const [profile] = await db
-      .insert(creatorProfiles)
-      .values({
-        userId: creatorUserRow.id, // reusing demo creator user
+    const profile = await ensureCreatorProfile(
+      { displayName: c.displayName, country: c.country },
+      {
+        userId: creatorUser.id, // reuse demo creator
         displayName: c.displayName,
         bio: c.bio,
         city: c.city,
@@ -256,55 +215,31 @@ async function seed() {
         niches: c.niches,
         instagramUrl: c.instagramUrl,
         facebookUrl: c.facebookUrl,
-      })
-      .onConflictDoNothing()
-      .returning();
-
-    // fetch if skipped
-    const prof =
-      profile ??
-      (await db.query.creatorProfiles.findFirst({
-        where: (p, { and, eq }) =>
-          and(eq(p.displayName, c.displayName), eq(p.country, c.country)),
-      }));
-
-    if (prof) {
-      await db
-        .insert(creatorStats)
-        .values({
-          creatorId: prof.id,
-          followers: c.followers,
-          engagementRate: c.engagementRate,
-          impressions30d: c.impressions30d,
-          postFrequencyPerWeek: c.postFrequencyPerWeek,
-        })
-        .onConflictDoNothing({ target: creatorStats.creatorId });
-    }
+      }
+    );
+    await ensureCreatorStats(profile.id, {
+      followers: c.followers,
+      engagementRate: c.engagementRate,
+      impressions30d: c.impressions30d,
+      postFrequencyPerWeek: c.postFrequencyPerWeek,
+    });
   }
-
   console.log("Added a tiny set of creators (additive)");
 
-  // 7) A couple extra training resources (idempotent by title)
-  const extraTraining = [
-    {
-      category: "Service Excellence",
-      title: "Handling Peak-Time Breakfast Rush",
-      format: "DOC" as const,
-      markdown:
-        "# Breakfast Rush Playbook\n\n- Pre-set tables\n- Expedite coffee/tea service\n- Stagger hot-food orders\n- Assign a floating runner",
-    },
-    {
-      category: "Housekeeping",
-      title: "Quick-Turn Room Prep (20 min)",
-      format: "DOC" as const,
-      markdown:
-        "# Quick Turnover\n\n- Strip bedding (3m)\n- Bathroom sanitize (7m)\n- Surfaces & floors (6m)\n- Final restock & check (4m)",
-    },
-  ];
+  // Training
+  await ensureTraining("Handling Peak-Time Breakfast Rush", {
+    category: "Service Excellence",
+    format: "DOC",
+    markdown:
+      "# Breakfast Rush Playbook\n\n- Pre-set tables\n- Expedite coffee/tea service\n- Stagger hot-food orders\n- Assign a floating runner",
+  });
 
-  for (const t of extraTraining) {
-    await db.insert(trainingResources).values(t).onConflictDoNothing();
-  }
+  await ensureTraining("Quick-Turn Room Prep (20 min)", {
+    category: "Housekeeping",
+    format: "DOC",
+    markdown:
+      "# Quick Turnover\n\n- Strip bedding (3m)\n- Bathroom sanitize (7m)\n- Surfaces & floors (6m)\n- Final restock & check (4m)",
+  });
 
   console.log("Additive seed complete!");
 }
