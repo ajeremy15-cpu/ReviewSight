@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from "react";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest } from "@/lib/api";
 
 interface User {
   id: string;
@@ -64,10 +64,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = async (email: string, password: string) => {
     setLoading(true);
     try {
-      const response = await apiRequest("/api/auth/login", {
-        method: "POST",
-        body: JSON.stringify({ email, password }),
-      });
+      const response = await apiRequest("POST", "/api/auth/login", { email, password });
 
       setUser(response.user);
       setOrganizations(response.organizations || []);
@@ -81,10 +78,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const signup = async (data: SignupData) => {
     setLoading(true);
     try {
-      const response = await apiRequest("/api/auth/signup", {
-        method: "POST",
-        body: JSON.stringify(data),
-      });
+      const response = await apiRequest("POST", "/api/auth/signup", data);
 
       setUser(response.user);
       setOrganizations(response.organizations || []);
