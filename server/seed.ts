@@ -1,289 +1,323 @@
 import { db } from "./db";
-import { 
-  users, organizations, organizationMembers, reviewSources, reviews,
-  creatorProfiles, creatorStats, trainingResources
+import {
+  users,
+  organizations,
+  organizationMembers,
+  reviewSources,
+  reviews,
+  creatorProfiles,
+  creatorStats,
+  trainingResources,
 } from "@shared/schema";
 import bcrypt from "bcrypt";
 
+/**
+ * This seed is ADDITIVE:
+ * - No deletes
+ * - Uses onConflictDoNothing to avoid duplicates when re-running
+ * - Adds a small amount of extra data
+ */
 async function seed() {
-  console.log("Starting database seed...");
+  console.log("Starting ADDITIVE seed...");
 
-  try {
-    // Clear existing data (in reverse order of dependencies)
-    await db.delete(creatorStats);
-    await db.delete(creatorProfiles);
-    await db.delete(reviews);
-    await db.delete(reviewSources);
-    await db.delete(organizationMembers);
-    await db.delete(organizations);
-    await db.delete(users);
-    await db.delete(trainingResources);
+  // 1) Ensure demo users exist
+  const ownerEmail = "owner@example.com";
+  const creatorEmail = "creator@example.com";
+  const passwordHash = await bcrypt.hash("demo1234", 10);
 
-    console.log("Cleared existing data");
+  const [owner] = await db
+    .insert(users)
+    .values({
+      name: "Demo Owner",
+      email: ownerEmail,
+      passwordHash,
+      role: "OWNER",
+    })
+    // UNIQUE(users.email) assumed
+    .onConflictDoNothing({ target: users.email })
+    .returning();
 
-    // Create demo users
-    const ownerPasswordHash = await bcrypt.hash('demo1234', 10);
-    const creatorPasswordHash = await bcrypt.hash('demo1234', 10);
+  const [creatorUser] = await db
+    .insert(users)
+    .values({
+      name: "Demo Creator",
+      email: creatorEmail,
+      passwordHash,
+      role: "CREATOR",
+    })
+    .onConflictDoNothing({ target: users.email })
+    .returning();
 
-    const [demoOwner] = await db.insert(users).values({
-      name: 'Demo Owner',
-      email: 'owner@example.com',
-      passwordHash: ownerPasswordHash,
-      role: 'OWNER',
-    }).returning();
+  // If they already existed, fetch them (so we have their IDs)
+  const [ownerRow] =
+    owner ??
+    (await db.query.users.findMany({
+      where: (u, { eq }) => eq(u.email, ownerEmail),
+      limit: 1,
+    }));
+  const [creatorUserRow] =
+    creatorUser ??
+    (await db.query.users.findMany({
+      where: (u, { eq }) => eq(u.email, creatorEmail),
+      limit: 1,
+    }));
 
-    const [demoCreator] = await db.insert(users).values({
-      name: 'Demo Creator',
-      email: 'creator@example.com',
-      passwordHash: creatorPasswordHash,
-      role: 'CREATOR',
-    }).returning();
+  console.log("Ensured demo users exist");
 
-    console.log("Created demo users");
+  // 2) Ensure organization exists
+  const orgSlug = "blue-lagoon-hotel";
+  const [org] = await db
+    .insert(organizations)
+    .values({
+      name: "Blue Lagoon Hotel",
+      slug: orgSlug,
+    })
+    // UNIQUE(organizations.slug) assumed
+    .onConflictDoNothing({ target: organizations.slug })
+    .returning();
 
-    // Create demo organization
-    const [blueLogoonHotel] = await db.insert(organizations).values({
-      name: 'Blue Lagoon Hotel',
-      slug: 'blue-lagoon-hotel',
-    }).returning();
+  const [orgRow] =
+    org ??
+    (await db.query.organizations.findMany({
+      where: (o, { eq }) => eq(o.slug, orgSlug),
+      limit: 1,
+    }));
 
-    // Add owner to organization
-    await db.insert(organizationMembers).values({
-      organizationId: blueLogoonHotel.id,
-      userId: demoOwner.id,
-      role: 'OWNER',
-    });
+  // 3) Ensure owner is a member
+  await db
+    .insert(organizationMembers)
+    .values({
+      organizationId: orgRow.id,
+      userId: ownerRow.id,
+      role: "OWNER",
+    })
+    // If you have a unique composite on (organizationId, userId), use it here:
+    // .onConflictDoNothing({ target: [organizationMembers.organizationId, organizationMembers.userId] })
+    .onConflictDoNothing();
 
-    console.log("Created demo organization");
+  console.log("Ensured organization & membership exist");
 
-    // Create review sources
-    const [googleSource] = await db.insert(reviewSources).values({
-      organizationId: blueLogoonHotel.id,
-      name: 'Google Reviews',
-      url: 'https://business.google.com',
-    }).returning();
+  // 4) Review sources (Google + TripAdvisor)
+  const [googleSrc] = await db
+    .insert(reviewSources)
+    .values({
+      organizationId: orgRow.id,
+      name: "Google Reviews",
+      url: "https://business.google.com",
+    })
+    // If you have a unique composite like (organizationId, name), use it:
+    .onConflictDoNothing()
+    .returning();
 
-    const [tripAdvisorSource] = await db.insert(reviewSources).values({
-      organizationId: blueLogoonHotel.id,
-      name: 'TripAdvisor',
-      url: 'https://tripadvisor.com',
-    }).returning();
+  const [tripSrc] = await db
+    .insert(reviewSources)
+    .values({
+      organizationId: orgRow.id,
+      name: "TripAdvisor",
+      url: "https://tripadvisor.com",
+    })
+    .onConflictDoNothing()
+    .returning();
 
-    console.log("Created review sources");
+  // Fetch if already existed
+  const googleSource =
+    googleSrc ??
+    (await db.query.reviewSources.findFirst({
+      where: (s, { and, eq }) =>
+        and(eq(s.organizationId, orgRow.id), eq(s.name, "Google Reviews")),
+    }))!;
+  const tripAdvisorSource =
+    tripSrc ??
+    (await db.query.reviewSources.findFirst({
+      where: (s, { and, eq }) =>
+        and(eq(s.organizationId, orgRow.id), eq(s.name, "TripAdvisor")),
+    }))!;
 
-    // Create sample reviews
-    const sampleReviews = [
-      {
-        organizationId: blueLogoonHotel.id,
-        sourceId: googleSource.id,
-        author: 'Sarah Mitchell',
-        rating: 4,
-        text: 'Great location with beautiful beachfront views. The staff was very friendly and helpful throughout our stay. However, the room cleaning could have been more thorough - found some dust on the furniture.',
-        createdAt: new Date('2024-03-15'),
-      },
-      {
-        organizationId: blueLogoonHotel.id,
-        sourceId: tripAdvisorSource.id,
-        author: 'Michael Rodriguez',
-        rating: 5,
-        text: 'Absolutely fantastic experience! The food quality was outstanding, especially the seafood dishes. Staff went above and beyond to make our stay memorable. Excellent value for money considering the beachfront location.',
-        createdAt: new Date('2024-03-12'),
-      },
-      {
-        organizationId: blueLogoonHotel.id,
-        sourceId: googleSource.id,
-        author: 'Jennifer Chen',
-        rating: 3,
-        text: 'The hotel room was quite dirty when we arrived. Housekeeping clearly didn\'t do a thorough job. However, the staff was very apologetic and quickly moved us to a cleaner room. The location is excellent for beach access.',
-        createdAt: new Date('2024-03-10'),
-      },
-      {
-        organizationId: blueLogoonHotel.id,
-        sourceId: tripAdvisorSource.id,
-        author: 'David Thompson',
-        rating: 2,
-        text: 'Service was extremely slow during breakfast and dinner. We waited over 45 minutes just to place our order. The food was decent when it finally arrived, but the long wait times really affected our experience.',
-        createdAt: new Date('2024-03-08'),
-      },
-      {
-        organizationId: blueLogoonHotel.id,
-        sourceId: googleSource.id,
-        author: 'Lisa Johnson',
-        rating: 5,
-        text: 'Perfect honeymoon destination! The staff made us feel so special with thoughtful touches and excellent service. Room was spotless and the oceanview was breathtaking. Will definitely return!',
-        createdAt: new Date('2024-03-05'),
-      },
-      {
-        organizationId: blueLogoonHotel.id,
-        sourceId: tripAdvisorSource.id,
-        author: 'Robert Wilson',
-        rating: 4,
-        text: 'Great value for a beachfront hotel. The location can\'t be beat - right on the beach with easy access to water activities. Food was good but not exceptional. Staff was friendly and accommodating.',
-        createdAt: new Date('2024-03-03'),
-      },
-      {
-        organizationId: blueLogoonHotel.id,
-        sourceId: googleSource.id,
-        author: 'Amanda Davis',
-        rating: 3,
-        text: 'Mixed experience. Beautiful location and the staff tried their best, but there were several maintenance issues in our room - broken AC, leaky faucet. When reported, maintenance was slow to respond.',
-        createdAt: new Date('2024-03-01'),
-      },
-      {
-        organizationId: blueLogoonHotel.id,
-        sourceId: tripAdvisorSource.id,
-        author: 'James Brown',
-        rating: 5,
-        text: 'Outstanding hospitality! Every staff member we encountered was professional, friendly, and genuinely caring. The food at the restaurant was exceptional - fresh, flavorful, and beautifully presented. Highly recommended!',
-        createdAt: new Date('2024-02-28'),
-      },
-    ];
+  console.log("Ensured review sources exist");
 
-    await db.insert(reviews).values(sampleReviews);
+  // 5) Add a SMALL batch of reviews (skips duplicates by (orgId, sourceId, author, createdAt))
+  const extraReviews = [
+    {
+      organizationId: orgRow.id,
+      sourceId: googleSource.id,
+      author: "Test Guest A",
+      rating: 4,
+      text:
+        "Lovely beach and friendly staff. Room was comfy, breakfast could improve.",
+      createdAt: new Date("2024-04-01"),
+    },
+    {
+      organizationId: orgRow.id,
+      sourceId: tripAdvisorSource.id,
+      author: "Test Guest B",
+      rating: 5,
+      text:
+        "Excellent stay! Fast check-in and beautiful ocean views. Will return.",
+      createdAt: new Date("2024-04-03"),
+    },
+    {
+      organizationId: orgRow.id,
+      sourceId: googleSource.id,
+      author: "Test Guest C",
+      rating: 3,
+      text:
+        "Great location, but our AC was noisy. Staff handled it the next day.",
+      createdAt: new Date("2024-04-05"),
+    },
+  ];
 
-    console.log("Created sample reviews");
-
-    // Create demo creator profile
-    const [creatorProfile] = await db.insert(creatorProfiles).values({
-      userId: demoCreator.id,
-      displayName: 'Maya Thompson',
-      bio: 'Caribbean lifestyle and travel content creator specializing in luxury resorts and authentic local experiences.',
-      city: 'Kingston',
-      country: 'Jamaica',
-      niches: ['travel', 'luxury', 'lifestyle'],
-      instagramUrl: 'https://instagram.com/maya_caribbean',
-      facebookUrl: 'https://facebook.com/maya.thompson',
-      tiktokUrl: 'https://tiktok.com/@maya_travel',
-    }).returning();
-
-    await db.insert(creatorStats).values({
-      creatorId: creatorProfile.id,
-      followers: 127000,
-      engagementRate: "8.2",
-      impressions30d: 2400000,
-      postFrequencyPerWeek: 5,
-    });
-
-    // Create additional creators
-    const additionalCreators = [
-      {
-        userId: demoCreator.id, // Reusing for simplicity
-        displayName: 'Marcus Johnson',
-        bio: 'Food and culture enthusiast showcasing Caribbean cuisine and hospitality experiences across the islands.',
-        city: 'Montego Bay',
-        country: 'Jamaica',
-        niches: ['food', 'culture', 'tourism'],
-        instagramUrl: 'https://instagram.com/marcus_caribbean_food',
-        facebookUrl: 'https://facebook.com/marcus.johnson',
-      },
-      {
-        userId: demoCreator.id,
-        displayName: 'Sophia Williams',
-        bio: 'Luxury travel blogger focusing on high-end Caribbean resorts and exclusive beach destinations.',
-        city: 'Bridgetown',
-        country: 'Barbados',
-        niches: ['luxury', 'travel', 'lifestyle'],
-        instagramUrl: 'https://instagram.com/sophia_luxury_travel',
-        facebookUrl: 'https://facebook.com/sophia.williams',
-      },
-    ];
-
-    for (const creator of additionalCreators) {
-      const [profile] = await db.insert(creatorProfiles).values(creator).returning();
-      
-      await db.insert(creatorStats).values({
-        creatorId: profile.id,
-        followers: Math.floor(Math.random() * 100000) + 50000,
-        engagementRate: (Math.round((Math.random() * 5 + 4) * 100) / 100).toString(),
-        impressions30d: Math.floor(Math.random() * 1000000) + 500000,
-        postFrequencyPerWeek: Math.floor(Math.random() * 5) + 3,
-      });
-    }
-
-    console.log("Created demo creators");
-
-    // Create training resources
-    const trainingData = [
-      {
-        category: 'Service Excellence',
-        title: 'Effective Complaint Resolution',
-        format: 'VIDEO' as const,
-        url: 'https://youtube.com/watch?v=example1',
-      },
-      {
-        category: 'Service Excellence',
-        title: 'Customer Service Standards Checklist',
-        format: 'DOC' as const,
-        markdown: '# Customer Service Standards\n\n## Key Principles\n- Always greet guests warmly\n- Listen actively to concerns\n- Follow up on requests\n\n## Response Times\n- Phone calls: Answer within 3 rings\n- Emails: Respond within 24 hours\n- Complaints: Address within 1 hour',
-      },
-      {
-        category: 'Service Excellence',
-        title: 'Building Customer Loyalty',
-        format: 'VIDEO' as const,
-        url: 'https://vimeo.com/example2',
-      },
-      {
-        category: 'Housekeeping',
-        title: 'Room Cleaning Standards Manual',
-        format: 'DOC' as const,
-        markdown: '# Housekeeping Standards\n\n## Daily Cleaning Checklist\n- [ ] Change bed linens\n- [ ] Clean and sanitize bathroom\n- [ ] Vacuum carpets and mop floors\n- [ ] Dust all surfaces\n- [ ] Restock amenities\n\n## Quality Control\n- Supervisory inspection required\n- Guest satisfaction priority',
-      },
-      {
-        category: 'Housekeeping',
-        title: 'Deep Cleaning Procedures',
-        format: 'VIDEO' as const,
-        url: 'https://youtube.com/watch?v=example3',
-      },
-      {
-        category: 'Food & Beverage',
-        title: 'Food Safety Guidelines',
-        format: 'DOC' as const,
-        markdown: '# Food Safety Protocol\n\n## Temperature Control\n- Cold foods: Below 41°F (5°C)\n- Hot foods: Above 140°F (60°C)\n\n## Hygiene Standards\n- Wash hands frequently\n- Use gloves when handling food\n- Clean utensils between uses\n\n## Storage Guidelines\n- First In, First Out (FIFO) rotation\n- Proper labeling with dates\n- Separate raw and cooked foods',
-      },
-      {
-        category: 'Front Desk',
-        title: 'Check-in Process Excellence',
-        format: 'VIDEO' as const,
-        url: 'https://youtube.com/watch?v=example4',
-      },
-      {
-        category: 'Front Desk',
-        title: 'Guest Communication Scripts',
-        format: 'DOC' as const,
-        markdown: '# Guest Communication Scripts\n\n## Check-in Greeting\n"Good [morning/afternoon/evening]! Welcome to Blue Lagoon Hotel. How may I assist you today?"\n\n## Handling Complaints\n1. Listen actively\n2. Acknowledge the concern\n3. Apologize sincerely\n4. Take action to resolve\n5. Follow up\n\n## Upselling Techniques\n- Room upgrades\n- Restaurant reservations\n- Spa services\n- Activity bookings',
-      },
-      {
-        category: 'Social Media',
-        title: 'Responding to Online Reviews',
-        format: 'VIDEO' as const,
-        url: 'https://vimeo.com/example5',
-      },
-      {
-        category: 'Social Media',
-        title: 'Social Media Crisis Management',
-        format: 'DOC' as const,
-        markdown: '# Social Media Crisis Management\n\n## Response Timeline\n- Negative review: Respond within 4 hours\n- Viral complaint: Respond within 1 hour\n- General inquiry: Respond within 24 hours\n\n## Response Guidelines\n1. Stay professional and courteous\n2. Take responsibility when appropriate\n3. Offer to resolve privately\n4. Follow up publicly when resolved\n\n## Escalation Process\n- Manager approval for sensitive issues\n- Legal review for potential disputes',
-      },
-    ];
-
-    await db.insert(trainingResources).values(trainingData);
-
-    console.log("Created training resources");
-
-    console.log("Database seeded successfully!");
-  } catch (error) {
-    console.error("Seed failed:", error);
-    throw error;
+  // If you have a unique index on (organizationId, sourceId, author, createdAt), target it.
+  for (const r of extraReviews) {
+    await db.insert(reviews).values(r).onConflictDoNothing();
   }
+
+  console.log("Added a small set of extra reviews (additive)");
+
+  // 6) Creators — ensure one main creator profile, then add 2 tiny extras
+  // Main creator (idempotent by userId)
+  const [mayaProfile] = await db
+    .insert(creatorProfiles)
+    .values({
+      userId: creatorUserRow.id,
+      displayName: "Maya Thompson",
+      bio:
+        "Caribbean lifestyle & travel content creator; luxury resorts & local experiences.",
+      city: "Kingston",
+      country: "Jamaica",
+      niches: ["travel", "luxury", "lifestyle"],
+      instagramUrl: "https://instagram.com/maya_caribbean",
+      facebookUrl: "https://facebook.com/maya.thompson",
+      tiktokUrl: "https://tiktok.com/@maya_travel",
+    })
+    // If creatorProfiles.userId is unique, this will upsert safely
+    .onConflictDoNothing({ target: creatorProfiles.userId })
+    .returning();
+
+  const maya =
+    mayaProfile ??
+    (await db.query.creatorProfiles.findFirst({
+      where: (p, { eq }) => eq(p.userId, creatorUserRow.id),
+    }))!;
+
+  // Stats for Maya (idempotent by creatorId)
+  await db
+    .insert(creatorStats)
+    .values({
+      creatorId: maya.id,
+      followers: 127_000,
+      engagementRate: "8.2",
+      impressions30d: 2_400_000,
+      postFrequencyPerWeek: 5,
+    })
+    .onConflictDoNothing({ target: creatorStats.creatorId });
+
+  // Two additional creators (very small set)
+  const tinyCreators = [
+    {
+      displayName: "Marcus Johnson",
+      bio:
+        "Food & culture across the Caribbean. Hospitality & culinary experiences.",
+      city: "Montego Bay",
+      country: "Jamaica",
+      niches: ["food", "culture", "tourism"],
+      instagramUrl: "https://instagram.com/marcus_caribbean_food",
+      facebookUrl: "https://facebook.com/marcus.johnson",
+      followers: 84_200,
+      engagementRate: "5.3",
+      impressions30d: 920_000,
+      postFrequencyPerWeek: 3,
+    },
+    {
+      displayName: "Sophia Williams",
+      bio:
+        "Luxury travel blogger covering high-end resorts & exclusive beach spots.",
+      city: "Bridgetown",
+      country: "Barbados",
+      niches: ["luxury", "travel", "lifestyle"],
+      instagramUrl: "https://instagram.com/sophia_luxury_travel",
+      facebookUrl: "https://facebook.com/sophia.williams",
+      followers: 101_400,
+      engagementRate: "6.1",
+      impressions30d: 1_150_000,
+      postFrequencyPerWeek: 4,
+    },
+  ];
+
+  for (const c of tinyCreators) {
+    // Upsert a creator profile by (displayName, country) as a simple uniqueness heuristic
+    const [profile] = await db
+      .insert(creatorProfiles)
+      .values({
+        userId: creatorUserRow.id, // reusing demo creator user
+        displayName: c.displayName,
+        bio: c.bio,
+        city: c.city,
+        country: c.country,
+        niches: c.niches,
+        instagramUrl: c.instagramUrl,
+        facebookUrl: c.facebookUrl,
+      })
+      .onConflictDoNothing()
+      .returning();
+
+    // fetch if skipped
+    const prof =
+      profile ??
+      (await db.query.creatorProfiles.findFirst({
+        where: (p, { and, eq }) =>
+          and(eq(p.displayName, c.displayName), eq(p.country, c.country)),
+      }));
+
+    if (prof) {
+      await db
+        .insert(creatorStats)
+        .values({
+          creatorId: prof.id,
+          followers: c.followers,
+          engagementRate: c.engagementRate,
+          impressions30d: c.impressions30d,
+          postFrequencyPerWeek: c.postFrequencyPerWeek,
+        })
+        .onConflictDoNothing({ target: creatorStats.creatorId });
+    }
+  }
+
+  console.log("Added a tiny set of creators (additive)");
+
+  // 7) A couple extra training resources (idempotent by title)
+  const extraTraining = [
+    {
+      category: "Service Excellence",
+      title: "Handling Peak-Time Breakfast Rush",
+      format: "DOC" as const,
+      markdown:
+        "# Breakfast Rush Playbook\n\n- Pre-set tables\n- Expedite coffee/tea service\n- Stagger hot-food orders\n- Assign a floating runner",
+    },
+    {
+      category: "Housekeeping",
+      title: "Quick-Turn Room Prep (20 min)",
+      format: "DOC" as const,
+      markdown:
+        "# Quick Turnover\n\n- Strip bedding (3m)\n- Bathroom sanitize (7m)\n- Surfaces & floors (6m)\n- Final restock & check (4m)",
+    },
+  ];
+
+  for (const t of extraTraining) {
+    await db.insert(trainingResources).values(t).onConflictDoNothing();
+  }
+
+  console.log("Additive seed complete!");
 }
 
 // Run seed if called directly
-seed().then(() => {
-  console.log("Seed completed");
-  process.exit(0);
-}).catch((error) => {
-  console.error("Seed failed:", error);
-  process.exit(1);
-});
+seed()
+  .then(() => {
+    console.log("Seed completed");
+    process.exit(0);
+  })
+  .catch((err) => {
+    console.error("Seed failed:", err);
+    process.exit(1);
+  });
 
 export default seed;
