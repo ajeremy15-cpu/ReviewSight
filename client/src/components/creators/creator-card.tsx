@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 // If your apiRequest lives in "@/lib/api", switch the import accordingly:
 import { apiRequest } from "@/lib/queryClient";
-import CreatorCard from "@/components/creator-card";
+import CreatorCard from "@/components/creators/creator-card";
 
 // --- Types to help with editor hints (not strict to backend) ---
 type PlatformStats = {
