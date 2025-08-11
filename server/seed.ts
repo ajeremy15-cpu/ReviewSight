@@ -1,213 +1,210 @@
+// server/seed.ts
 import { db } from "./db";
 import {
-  users,
-  organizations,
-  organizationMembers,
-  reviewSources,
-  reviews,
-  creatorProfiles,
-  creatorStats,
-  trainingResources,
+  users, organizations, organizationMembers, reviewSources, reviews,
+  creatorProfiles, creatorStats, trainingResources
 } from "@shared/schema";
 import bcrypt from "bcrypt";
+import { eq } from "drizzle-orm";
 
-async function ensureUser(email: string, data: Omit<typeof users.$inferInsert, "email">) {
-  const existing = await db.query.users.findFirst({
-    where: (u, { eq }) => eq(u.email, email),
-  });
-  if (existing) return existing;
-  const [row] = await db.insert(users).values({ email, ...data }).returning();
-  return row;
+// helper to shift days from now
+const daysAgo = (n: number) => {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return d;
+};
+
+async function ensureUser(name: string, email: string, role: "OWNER" | "CREATOR", pwd = "demo1234") {
+  const existing = await db.select().from(users).where(eq(users.email, email));
+  if (existing.length) return existing[0];
+  const passwordHash = await bcrypt.hash(pwd, 10);
+  const [u] = await db.insert(users).values({ name, email, passwordHash, role }).returning();
+  return u;
 }
 
-async function ensureOrganization(slug: string, name: string) {
-  const existing = await db.query.organizations.findFirst({
-    where: (o, { eq }) => eq(o.slug, slug),
-  });
-  if (existing) return existing;
-  const [row] = await db.insert(organizations).values({ slug, name }).returning();
-  return row;
+async function ensureOrg(name: string, slug: string, ownerId: string) {
+  const existing = await db.select().from(organizations).where(eq(organizations.slug, slug));
+  const org = existing.length
+    ? existing[0]
+    : (await db.insert(organizations).values({ name, slug }).returning())[0];
+
+  // ensure membership
+  const mem = await db.select().from(organizationMembers)
+    .where(eq(organizationMembers.organizationId, org.id));
+  if (!mem.find(m => m.userId === ownerId)) {
+    await db.insert(organizationMembers).values({ organizationId: org.id, userId: ownerId, role: "OWNER" });
+  }
+  return org;
 }
 
-async function ensureOrgMember(organizationId: string, userId: string, role: "OWNER" | "CREATOR") {
-  const existing = await db.query.organizationMembers.findFirst({
-    where: (m, { and, eq }) => and(eq(m.organizationId, organizationId), eq(m.userId, userId)),
-  });
-  if (existing) return existing;
-  const [row] = await db.insert(organizationMembers).values({ organizationId, userId, role }).returning();
-  return row;
+async function ensureSource(orgId: string, name: string, url: string) {
+  const existing = await db.select().from(reviewSources).where(eq(reviewSources.name, name));
+  return existing.length
+    ? existing[0]
+    : (await db.insert(reviewSources).values({ organizationId: orgId, name, url }).returning())[0];
 }
 
-async function ensureReviewSource(organizationId: string, name: string, url: string) {
-  const existing = await db.query.reviewSources.findFirst({
-    where: (s, { and, eq }) => and(eq(s.organizationId, organizationId), eq(s.name, name)),
-  });
-  if (existing) return existing;
-  const [row] = await db.insert(reviewSources).values({ organizationId, name, url }).returning();
-  return row;
-}
-
-async function ensureReview(r: typeof reviews.$inferInsert) {
-  // crude idempotency: author + createdAt + source + org
-  const existing = await db.query.reviews.findFirst({
-    where: (rv, { and, eq }) =>
-      and(
-        eq(rv.organizationId, r.organizationId),
-        eq(rv.sourceId, r.sourceId),
-        eq(rv.author, r.author),
-        eq(rv.createdAt, r.createdAt as Date)
-      ),
-  });
-  if (existing) return existing;
-  const [row] = await db.insert(reviews).values(r).returning();
-  return row;
-}
-
-async function ensureCreatorProfile(match: { displayName: string; country: string }, data: Omit<typeof creatorProfiles.$inferInsert, "id">) {
-  const existing = await db.query.creatorProfiles.findFirst({
-    where: (p, { and, eq }) => and(eq(p.displayName, match.displayName), eq(p.country, match.country)),
-  });
-  if (existing) return existing;
-  const [row] = await db.insert(creatorProfiles).values(data).returning();
-  return row;
-}
-
-async function ensureCreatorStats(creatorId: string, data: Omit<typeof creatorStats.$inferInsert, "id" | "creatorId">) {
-  const existing = await db.query.creatorStats.findFirst({
-    where: (s, { eq }) => eq(s.creatorId, creatorId),
-  });
-  if (existing) return existing;
-  const [row] = await db.insert(creatorStats).values({ creatorId, ...data }).returning();
-  return row;
-}
-
-async function ensureTraining(title: string, data: Omit<typeof trainingResources.$inferInsert, "id" | "title">) {
-  const existing = await db.query.trainingResources.findFirst({
-    where: (t, { eq }) => eq(t.title, title),
-  });
-  if (existing) return existing;
-  const [row] = await db.insert(trainingResources).values({ title, ...data }).returning();
-  return row;
-}
-
-/**
- * ADDITIVE seed: does not delete anything and does not rely on ON CONFLICT targets.
- * Safe to re-run; it checks for existence before inserting.
- */
 async function seed() {
-  console.log("Starting ADDITIVE seed (no ON CONFLICT targets)...");
+  console.log("Starting ADDITIVE seed...");
 
-  // Users
-  const passwordHash = await bcrypt.hash("demo1234", 10);
-  const owner = await ensureUser("owner@example.com", {
-    name: "Demo Owner",
-    passwordHash,
-    role: "OWNER",
-  });
-  const creatorUser = await ensureUser("creator@example.com", {
-    name: "Demo Creator",
-    passwordHash,
-    role: "CREATOR",
-  });
+  // 1) Users/org
+  const owner = await ensureUser("Demo Owner", "owner@example.com", "OWNER");
+  const creator = await ensureUser("Demo Creator", "creator@example.com", "CREATOR");
   console.log("Ensured demo users exist");
 
-  // Organization + membership
-  const org = await ensureOrganization("blue-lagoon-hotel", "Blue Lagoon Hotel");
-  await ensureOrgMember(org.id, owner.id, "OWNER");
+  const org = await ensureOrg("Blue Lagoon Hotel", "blue-lagoon-hotel", owner.id);
   console.log("Ensured organization & membership exist");
 
-  // Review sources
-  const googleSource = await ensureReviewSource(org.id, "Google Reviews", "https://business.google.com");
-  const tripSource = await ensureReviewSource(org.id, "TripAdvisor", "https://tripadvisor.com");
+  // 2) Sources
+  const google = await ensureSource(org.id, "Google Reviews", "https://business.google.com");
+  const trip = await ensureSource(org.id, "TripAdvisor", "https://tripadvisor.com");
   console.log("Ensured review sources exist");
 
-  // Small batch of reviews
-  const extraReviews = [
+  // 3) Recent reviews (last 7–60 days)
+  const recentReviews = [
     {
       organizationId: org.id,
-      sourceId: googleSource.id,
-      author: "Test Guest A",
+      sourceId: google.id,
+      author: "Sarah Mitchell",
       rating: 4,
-      text: "Lovely beach and friendly staff. Room was comfy, breakfast could improve.",
-      createdAt: new Date("2024-04-01"),
+      text:
+        "Great beachfront views and friendly staff. Room cleaning could be more thorough.",
+      createdAt: daysAgo(12),
     },
     {
       organizationId: org.id,
-      sourceId: tripSource.id,
-      author: "Test Guest B",
+      sourceId: trip.id,
+      author: "Michael Rodriguez",
       rating: 5,
-      text: "Excellent stay! Fast check-in and beautiful ocean views. Will return.",
-      createdAt: new Date("2024-04-03"),
+      text:
+        "Fantastic experience! Food quality outstanding. Staff went above and beyond.",
+      createdAt: daysAgo(26),
     },
     {
       organizationId: org.id,
-      sourceId: googleSource.id,
-      author: "Test Guest C",
+      sourceId: google.id,
+      author: "Jennifer Chen",
       rating: 3,
-      text: "Great location, but our AC was noisy. Staff handled it the next day.",
-      createdAt: new Date("2024-04-05"),
+      text:
+        "First room had cleanliness issues, but staff quickly moved us. Excellent location.",
+      createdAt: daysAgo(41),
     },
-  ] satisfies Array<typeof reviews.$inferInsert>;
-
-  for (const r of extraReviews) await ensureReview(r);
-  console.log("Added a small set of extra reviews (additive)");
-
-  // Creators
-  const maya = await ensureCreatorProfile(
-    { displayName: "Maya Thompson", country: "Jamaica" },
     {
-      userId: creatorUser.id,
+      organizationId: org.id,
+      sourceId: trip.id,
+      author: "David Thompson",
+      rating: 2,
+      text:
+        "Service was very slow at breakfast and dinner. Food decent but long waits.",
+      createdAt: daysAgo(7),
+    },
+    {
+      organizationId: org.id,
+      sourceId: google.id,
+      author: "Lisa Johnson",
+      rating: 5,
+      text:
+        "Perfect honeymoon destination—spotless room, breathtaking ocean view, amazing staff.",
+      createdAt: daysAgo(18),
+    },
+    {
+      organizationId: org.id,
+      sourceId: trip.id,
+      author: "Robert Wilson",
+      rating: 4,
+      text:
+        "Great value right on the beach. Food good, staff friendly and accommodating.",
+      createdAt: daysAgo(55),
+    },
+    {
+      organizationId: org.id,
+      sourceId: google.id,
+      author: "Amanda Davis",
+      rating: 3,
+      text:
+        "Beautiful location but some maintenance issues (AC, faucet). Slow response.",
+      createdAt: daysAgo(33),
+    },
+    {
+      organizationId: org.id,
+      sourceId: trip.id,
+      author: "James Brown",
+      rating: 5,
+      text:
+        "Outstanding hospitality and exceptional restaurant—fresh and beautifully presented.",
+      createdAt: daysAgo(21),
+    },
+  ];
+
+  // Insert only if we don't already have recent ones (to keep additive)
+  const existingCount = await db.select({}).from(reviews);
+  if (existingCount.length < 8) {
+    await db.insert(reviews).values(recentReviews);
+    console.log("Added a small set of extra reviews (additive, recent dates)");
+  } else {
+    console.log("Reviews already exist; skipping insert to avoid duplicates");
+  }
+
+  // 4) Creators + stats (idempotent by displayName)
+  const getCreatorByName = async (displayName: string) => {
+    const rows = await db.select().from(creatorProfiles).where(eq(creatorProfiles.displayName, displayName));
+    return rows[0];
+  };
+
+  const creatorsToEnsure = [
+    {
+      userId: creator.id,
       displayName: "Maya Thompson",
-      bio: "Caribbean lifestyle & travel content creator; luxury resorts & local experiences.",
+      bio:
+        "Caribbean lifestyle and travel creator focusing on luxury resorts and authentic experiences.",
       city: "Kingston",
       country: "Jamaica",
       niches: ["travel", "luxury", "lifestyle"],
       instagramUrl: "https://instagram.com/maya_caribbean",
       facebookUrl: "https://facebook.com/maya.thompson",
       tiktokUrl: "https://tiktok.com/@maya_travel",
-    }
-  );
-  await ensureCreatorStats(maya.id, {
-    followers: 127_000,
-    engagementRate: "8.2",
-    impressions30d: 2_400_000,
-    postFrequencyPerWeek: 5,
-  });
-
-  const tinyCreators = [
+      followers: 127000,
+      engagementRate: "8.2",
+      impressions30d: 2400000,
+      postFrequencyPerWeek: 5,
+    },
     {
+      userId: creator.id,
       displayName: "Marcus Johnson",
-      bio: "Food & culture across the Caribbean. Hospitality & culinary experiences.",
+      bio:
+        "Food & culture enthusiast showcasing Caribbean cuisine and hospitality.",
       city: "Montego Bay",
       country: "Jamaica",
       niches: ["food", "culture", "tourism"],
       instagramUrl: "https://instagram.com/marcus_caribbean_food",
       facebookUrl: "https://facebook.com/marcus.johnson",
-      followers: 84_200,
-      engagementRate: "5.3",
-      impressions30d: 920_000,
-      postFrequencyPerWeek: 3,
+      followers: 98000,
+      engagementRate: "6.1",
+      impressions30d: 1200000,
+      postFrequencyPerWeek: 4,
     },
     {
+      userId: creator.id,
       displayName: "Sophia Williams",
-      bio: "Luxury travel blogger covering high-end resorts & exclusive beach spots.",
+      bio:
+        "Luxury travel blogger covering high‑end Caribbean resorts.",
       city: "Bridgetown",
       country: "Barbados",
       niches: ["luxury", "travel", "lifestyle"],
       instagramUrl: "https://instagram.com/sophia_luxury_travel",
       facebookUrl: "https://facebook.com/sophia.williams",
-      followers: 101_400,
-      engagementRate: "6.1",
-      impressions30d: 1_150_000,
-      postFrequencyPerWeek: 4,
+      followers: 152000,
+      engagementRate: "5.4",
+      impressions30d: 1800000,
+      postFrequencyPerWeek: 3,
     },
   ];
 
-  for (const c of tinyCreators) {
-    const profile = await ensureCreatorProfile(
-      { displayName: c.displayName, country: c.country },
-      {
-        userId: creatorUser.id, // reuse demo creator
+  for (const c of creatorsToEnsure) {
+    let profile = await getCreatorByName(c.displayName);
+    if (!profile) {
+      [profile] = await db.insert(creatorProfiles).values({
+        userId: c.userId,
         displayName: c.displayName,
         bio: c.bio,
         city: c.city,
@@ -215,36 +212,44 @@ async function seed() {
         niches: c.niches,
         instagramUrl: c.instagramUrl,
         facebookUrl: c.facebookUrl,
-      }
-    );
-    await ensureCreatorStats(profile.id, {
-      followers: c.followers,
-      engagementRate: c.engagementRate,
-      impressions30d: c.impressions30d,
-      postFrequencyPerWeek: c.postFrequencyPerWeek,
-    });
+        tiktokUrl: c.tiktokUrl,
+      }).returning();
+
+      await db.insert(creatorStats).values({
+        creatorId: profile.id,
+        followers: c.followers,
+        engagementRate: c.engagementRate,
+        impressions30d: c.impressions30d,
+        postFrequencyPerWeek: c.postFrequencyPerWeek,
+      });
+    }
   }
-  console.log("Added a tiny set of creators (additive)");
+  console.log("Ensured creators & stats exist");
 
-  // Training
-  await ensureTraining("Handling Peak-Time Breakfast Rush", {
-    category: "Service Excellence",
-    format: "DOC",
-    markdown:
-      "# Breakfast Rush Playbook\n\n- Pre-set tables\n- Expedite coffee/tea service\n- Stagger hot-food orders\n- Assign a floating runner",
-  });
+  // 5) Training (idempotent by title)
+  const existingTraining = await db.select().from(trainingResources);
+  if (existingTraining.length === 0) {
+    await db.insert(trainingResources).values([
+      {
+        category: "Service Excellence",
+        title: "Effective Complaint Resolution",
+        format: "VIDEO",
+        url: "https://youtu.be/dQw4w9WgXcQ",
+      },
+      {
+        category: "Service Excellence",
+        title: "Customer Service Standards Checklist",
+        format: "DOC",
+        markdown:
+          "# Customer Service Standards\n\n- Greet guests warmly\n- Listen actively\n- Follow up promptly",
+      },
+    ]);
+    console.log("Added training resources");
+  }
 
-  await ensureTraining("Quick-Turn Room Prep (20 min)", {
-    category: "Housekeeping",
-    format: "DOC",
-    markdown:
-      "# Quick Turnover\n\n- Strip bedding (3m)\n- Bathroom sanitize (7m)\n- Surfaces & floors (6m)\n- Final restock & check (4m)",
-  });
-
-  console.log("Additive seed complete!");
+  console.log("Additive seed complete.");
 }
 
-// Run seed if called directly
 seed()
   .then(() => {
     console.log("Seed completed");
