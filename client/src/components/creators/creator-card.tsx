@@ -1,15 +1,10 @@
-import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-// If your apiRequest lives in "@/lib/api", switch the import accordingly:
-import { apiRequest } from "@/lib/queryClient";
+import { useEffect, useState, useMemo } from "react";
 import CreatorCard from "@/components/creators/creator-card";
 
-// --- Types to help with editor hints (not strict to backend) ---
 type PlatformStats = {
   followers?: number;
-  impressions?: number;
   engagementRate?: number;
-  posts?: number;
+  impressions?: number;
   [k: string]: number | undefined;
 };
 
@@ -23,33 +18,12 @@ type RawCreator = {
   niches?: string[];
   followers?: number;
   engagementRate?: number;
-  links?: {
-    instagram?: string;
-    facebook?: string;
-    tiktok?: string;
-    website?: string;
-    [k: string]: string | undefined;
-  };
-  platforms?: {
-    instagram?: PlatformStats;
-    tiktok?: PlatformStats;
-    facebook?: PlatformStats;
-    [k: string]: PlatformStats | undefined;
-  };
+  links?: { instagram?: string; facebook?: string; tiktok?: string; website?: string };
+  platforms?: { instagram?: PlatformStats; tiktok?: PlatformStats; facebook?: PlatformStats };
   brandFitScore?: number;
-  instagramUrl?: string;
-  facebookUrl?: string;
-  tiktokUrl?: string;
-  // allow any other fields
   [k: string]: any;
 };
 
-type CreatorsApiResponse =
-  | RawCreator[]
-  | { creators: RawCreator[] }
-  | { data: RawCreator[] };
-
-// --- Normalize backend shape into what CreatorCard expects ---
 function normalizeCreator(raw: RawCreator) {
   return {
     id: raw.id,
@@ -70,95 +44,108 @@ function normalizeCreator(raw: RawCreator) {
       raw.platforms?.tiktok?.engagementRate ??
       raw.platforms?.facebook?.engagementRate ??
       0,
-    instagramUrl: raw.instagramUrl || raw.links?.instagram,
-    facebookUrl: raw.facebookUrl || raw.links?.facebook,
-    tiktokUrl: raw.tiktokUrl || raw.links?.tiktok,
+    instagramUrl: raw.links?.instagram,
+    facebookUrl: raw.links?.facebook,
+    tiktokUrl: raw.links?.tiktok,
     brandFitScore: raw.brandFitScore,
   };
 }
 
-function extractCreators(resp: CreatorsApiResponse | null | undefined): RawCreator[] {
-  if (!resp) return [];
-  if (Array.isArray(resp)) return resp;
-  // @ts-ignore tolerant to loose shapes
-  if (Array.isArray(resp.creators)) return resp.creators;
-  // @ts-ignore tolerant to loose shapes
-  if (Array.isArray(resp.data)) return resp.data;
-  return [];
-}
-
 export default function Creators() {
-  // Optional shortlist state (client‑side only for now)
-  const [shortlistedIds, setShortlistedIds] = useState<Record<string, boolean>>({});
+  const [loading, setLoading] = useState(true);
+  const [status, setStatus] = useState<number | null>(null);
+  const [text, setText] = useState<string>("");
+  const [json, setJson] = useState<any>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [shortlisted, setShortlisted] = useState<Record<string, boolean>>({});
 
-  const { data, isLoading, error, refetch } = useQuery({
-    // You can also use the default queryFn by only providing queryKey,
-    // but we’ll call the helper explicitly for clarity.
-    queryKey: ["/api/creators"],
-    queryFn: async () => {
-      return await apiRequest<CreatorsApiResponse>("GET", "/api/creators");
-    },
-    staleTime: 5 * 60 * 1000,
-  });
+  useEffect(() => {
+    (async () => {
+      try {
+        setLoading(true);
+        setError(null);
+        setStatus(null);
+        setText("");
 
-  const creators = useMemo(() => {
-    const raws = extractCreators(data);
-    return raws.map(normalizeCreator);
-  }, [data]);
+        const res = await fetch("/api/creators", {
+          credentials: "include",
+          headers: { Accept: "application/json" },
+        });
+        setStatus(res.status);
 
-  if (isLoading) {
-    return (
-      <div className="p-6 text-sm opacity-80">
-        Loading creators…
-      </div>
-    );
-  }
+        const ct = res.headers.get("content-type") || "";
+        if (ct.includes("application/json")) {
+          const j = await res.json();
+          setJson(j);
+        } else {
+          const t = await res.text();
+          setText(t);
+        }
+      } catch (e: any) {
+        setError(e?.message || String(e));
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
 
-  if (error) {
-    return (
-      <div className="p-6">
-        <div className="mb-3 text-red-600 font-medium">
-          Failed to load creators
-        </div>
-        <button
-          onClick={() => refetch()}
-          className="px-3 py-1.5 rounded-md border hover:bg-gray-50"
-        >
-          Retry
-        </button>
-      </div>
-    );
-  }
+  const creators: RawCreator[] = useMemo(() => {
+    if (!json) return [];
+    if (Array.isArray(json)) return json as RawCreator[];
+    if (Array.isArray(json?.creators)) return json.creators as RawCreator[];
+    if (Array.isArray(json?.data)) return json.data as RawCreator[];
+    return [];
+  }, [json]);
 
-  if (!creators.length) {
-    return (
-      <div className="p-6">
-        <div className="text-sm opacity-80">
-          No creators found yet.
-        </div>
-      </div>
-    );
-  }
+  const normalized = creators.map(normalizeCreator);
+
+  // --- DIAGNOSTIC HUD (visible only if something’s off) ---
+  const showDiag = loading || error || status !== 200 || !normalized.length;
 
   return (
-    <div className="p-6 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-      {creators.map((c) => {
-        const isShortlisted = !!shortlistedIds[c.id];
-        return (
-          <CreatorCard
-            key={c.id}
-            creator={c}
-            isShortlisted={isShortlisted}
-            onShortlist={(current) => {
-              // toggle shortlist locally; swap with API when ready
-              setShortlistedIds((prev) => ({
-                ...prev,
-                [c.id]: !current,
-              }));
-            }}
-          />
-        );
-      })}
+    <div className="p-6">
+      {showDiag && (
+        <div className="mb-4 rounded-xl border p-4 text-sm">
+          <div className="font-semibold mb-2">Creators Diagnostics</div>
+          <div>Loading: {String(loading)}</div>
+          <div>Status: {status ?? "n/a"}</div>
+          {error && <div className="text-red-600">Error: {error}</div>}
+          {!!text && (
+            <div className="mt-2">
+              <div className="font-medium">Text response:</div>
+              <pre className="overflow-auto whitespace-pre-wrap">{text}</pre>
+            </div>
+          )}
+          {json && (
+            <div className="mt-2">
+              <div className="font-medium">JSON keys:</div>
+              <pre className="overflow-auto whitespace-pre-wrap">
+                {JSON.stringify(Object.keys(json), null, 2)}
+              </pre>
+              <div className="mt-2">Creators length (parsed): {normalized.length}</div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {!loading && !error && normalized.length > 0 ? (
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {normalized.map((c) => (
+            <CreatorCard
+              key={c.id}
+              creator={c as any}
+              isShortlisted={!!shortlisted[c.id]}
+              onShortlist={(current) => {
+                setShortlisted((prev) => ({ ...prev, [c.id]: !current }));
+              }}
+            />
+          ))}
+        </div>
+      ) : (
+        !loading && !error && (
+          <div className="text-sm opacity-80">No creators found.</div>
+        )
+      )}
     </div>
   );
 }
